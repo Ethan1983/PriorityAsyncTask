@@ -17,17 +17,16 @@
  * The above copyright notice and this permission notice shall be included
  * in all copies or substantial portions of the Software.
  */
-package com.unlink.lib.priorityasynctask;
 
-import android.os.*;
+package com.unlink.lib.priorityasynctask;
 
 import java.util.ArrayDeque;
 import java.util.Comparator;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.ThreadFactory;
@@ -37,8 +36,23 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import android.os.Handler;
+import android.os.Looper;
+import android.os.Message;
+import android.os.Process;
+
+/**
+ * Same as {@link android.os.AsyncTask} and supports priority when tasks
+ * are executed on {@link com.unlink.lib.priorityasynctask.PriorityAsyncTask#THREAD_POOL_EXECUTOR}.
+ * Concrete implementations can specify priority via {@link #getPriority()}.
+ *
+ * Priority isn't used when used with custom executors via
+ * {@link #executeOnExecutor(java.util.concurrent.Executor, Object[])}
+ *
+ * This can be used only from API 9 as it uses {@link java.util.ArrayDeque} introduced at API 9.
+ */
 public abstract class PriorityAsyncTask<Params, Progress, Result> {
-    private static final String LOG_TAG = "AsyncTask";
+    private static final String LOG_TAG = "PriorityAsyncTask";
 
     private static final int CPU_COUNT = Runtime.getRuntime().availableProcessors();
     private static final int CORE_POOL_SIZE = CPU_COUNT + 1;
@@ -64,7 +78,6 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
             return mPriority;
         }
     }
-
 
     private static final class TaskComparator implements Comparator<Runnable> {
 
@@ -92,7 +105,7 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
             new PriorityBlockingQueue<Runnable>(128, new TaskComparator());
 
     /**
-     * An {@link java.util.concurrent.Executor} that can be used to execute tasks in parallel.
+     * An {@link Executor} that can be used to execute tasks in parallel.
      */
     public static final Executor THREAD_POOL_EXECUTOR
             = new ThreadPoolExecutor(CORE_POOL_SIZE, MAXIMUM_POOL_SIZE, KEEP_ALIVE,
@@ -107,9 +120,9 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
     private static final int MESSAGE_POST_RESULT = 0x1;
     private static final int MESSAGE_POST_PROGRESS = 0x2;
 
-    private static final InternalHandler sHandler = new InternalHandler();
-
     private static volatile Executor sDefaultExecutor = SERIAL_EXECUTOR;
+    private static InternalHandler sHandler;
+
     private final WorkerRunnable<Params, Result> mWorker;
     private final PriorityFutureTask<Result> mFuture;
     private Executor mTaskExecutor;
@@ -159,14 +172,18 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
          */
         RUNNING,
         /**
-         * Indicates that {@link android.os.AsyncTask#onPostExecute} has finished.
+         * Indicates that {@link PriorityAsyncTask#onPostExecute} has finished.
          */
         FINISHED,
     }
 
-    /** @hide Used to force static handler to be created. */
-    public static void init() {
-        sHandler.getLooper();
+    private static Handler getHandler() {
+        synchronized (PriorityAsyncTask.class) {
+            if (sHandler == null) {
+                sHandler = new InternalHandler();
+            }
+            return sHandler;
+        }
     }
 
     /** @hide */
@@ -182,13 +199,13 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
             public Result call() throws Exception {
                 mTaskInvoked.set(true);
 
-                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND);
                 //noinspection unchecked
                 return postResult(doInBackground(mParams));
             }
         };
 
-        int priority = getPriority();
+        final int priority = getPriority();
         if ( priority < PRIORITY_LOWEST || priority > PRIORITY_HIGHEST ) {
             throw new IllegalStateException("Invalid priority specification");
         }
@@ -219,7 +236,7 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
 
     private Result postResult(Result result) {
         @SuppressWarnings("unchecked")
-        Message message = sHandler.obtainMessage(MESSAGE_POST_RESULT,
+        Message message = getHandler().obtainMessage(MESSAGE_POST_RESULT,
                 new AsyncTaskResult<Result>(this, result));
         message.sendToTarget();
         return result;
@@ -404,7 +421,7 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
      * @throws ExecutionException If the computation threw an exception.
      * @throws InterruptedException If the current thread was interrupted
      *         while waiting.
-     * @throws java.util.concurrent.TimeoutException If the wait timed out.
+     * @throws TimeoutException If the wait timed out.
      */
     public final Result get(long timeout, TimeUnit unit) throws InterruptedException,
             ExecutionException, TimeoutException {
@@ -431,10 +448,10 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
      *
      * @param params The parameters of the task.
      *
-     * @return This instance of AsyncTask.
+     * @return This instance of PriorityAsyncTask.
      *
      * @throws IllegalStateException If {@link #getStatus()} returns either
-     *         {@link AsyncTask.Status#RUNNING} or {@link AsyncTask.Status#FINISHED}.
+     *         {@link PriorityAsyncTask.Status#RUNNING} or {@link PriorityAsyncTask.Status#FINISHED}.
      *
      * @see #executeOnExecutor(java.util.concurrent.Executor, Object[])
      * @see #execute(Runnable)
@@ -469,15 +486,15 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
      *              convenient process-wide thread pool for tasks that are loosely coupled.
      * @param params The parameters of the task.
      *
-     * @return This instance of AsyncTask.
+     * @return This instance of PriorityAsyncTask.
      *
      * @throws IllegalStateException If {@link #getStatus()} returns either
-     *         {@link AsyncTask.Status#RUNNING} or {@link AsyncTask.Status#FINISHED}.
+     *         {@link PriorityAsyncTask.Status#RUNNING} or {@link PriorityAsyncTask.Status#FINISHED}.
      *
      * @see #execute(Object[])
      */
     public final PriorityAsyncTask<Params, Progress, Result> executeOnExecutor(Executor exec,
-                                                                               Params... params) {
+                                                                       Params... params) {
         if (mStatus != Status.PENDING) {
             switch (mStatus) {
                 case RUNNING:
@@ -491,7 +508,6 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
         }
 
         mTaskExecutor = exec;
-
         mStatus = Status.RUNNING;
 
         onPreExecute();
@@ -530,7 +546,7 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
      */
     protected final void publishProgress(Progress... values) {
         if (!isCancelled()) {
-            sHandler.obtainMessage(MESSAGE_POST_PROGRESS,
+            getHandler().obtainMessage(MESSAGE_POST_PROGRESS,
                     new AsyncTaskResult<Progress>(this, values)).sendToTarget();
         }
     }
@@ -545,10 +561,14 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
     }
 
     private static class InternalHandler extends Handler {
+        public InternalHandler() {
+            super(Looper.getMainLooper());
+        }
+
         @SuppressWarnings({"unchecked", "RawUseOfParameterizedType"})
         @Override
         public void handleMessage(Message msg) {
-            AsyncTaskResult result = (AsyncTaskResult) msg.obj;
+            AsyncTaskResult<?> result = (AsyncTaskResult<?>) msg.obj;
             switch (msg.what) {
                 case MESSAGE_POST_RESULT:
                     // There is only one result
@@ -576,5 +596,16 @@ public abstract class PriorityAsyncTask<Params, Progress, Result> {
         }
     }
 
-    abstract protected int getPriority();
+    /**
+     * Gets priority for this task.
+     *
+     * @see #PRIORITY_LOWEST
+     * @see #PRIORITY_LOW
+     * @see #PRIORITY_NORMAL
+     * @see #PRIORITY_HIGH
+     * @see #PRIORITY_HIGHEST
+     *
+     * @return int identifying task priority.
+     */
+    protected abstract int getPriority();
 }
